@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>MetroPulse MVP Responsive</title>
+<script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+<style>
+  html, body { margin:0; padding:0; height:100%; width:100%; background:#000; }
+  #map { width:100vw; height:100vh; }
+
+  .message {
+    position:absolute; top:1.5%; width:100%; text-align:center;
+    font-family:sans-serif; font-size:4vw; color:#fff;
+    text-shadow: 0 0 5px #000;
+  }
+
+  /* Leaderboard responsive */
+  .leaderboard {
+    position:absolute; top:1.5%; right:2%;
+    width:150px; max-width:25vw;
+    background:rgba(0,0,0,0.7);
+    color:#fff; font-family:sans-serif; font-size:3vw;
+    padding:8px; border-radius:8px;
+  }
+  .leaderboard h3 {
+    margin:0 0 5px 0; font-size:3.5vw; text-align:center;
+  }
+
+  @media (orientation:landscape) {
+    .message { font-size:2.5vw; }
+    .leaderboard { font-size:2.5vw; max-width:20vw; padding:6px; }
+    .leaderboard h3 { font-size:3vw; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="message">Qualcuno vuole tornare a casa...</div>
+<div class="leaderboard">
+  <h3>Leaderboard</h3>
+  <div id="leaderboard-list">
+    Partite giocate: 0<br>
+    Nodi raggiunti: 0
+  </div>
+</div>
+
+<script>
+mapboxgl.accessToken = 'pk.eyJ1IjoiZ2NhbXBpb25pIiwiYSI6ImNtbTFzd2djNjBjN2YycHBqb2F2b3JmcDUifQ.2UvjR4rnxe2TSTv15K0tpg';
+const map = new mapboxgl.Map({
+  container:'map',
+  style:'mapbox://styles/mapbox/dark-v11',
+  center:[12.4964,41.9028],
+  zoom:5
+});
+
+// ---- GRAFO NODI ----
+const nodes = [
+  { id:1, coords:[12,42] },
+  { id:2, coords:[13,42.5] },
+  { id:3, coords:[14,43] },
+  { id:4, coords:[12.5,43.5] },
+  { id:5, coords:[13.5,44], home:true, thumbnail:'https://cdn-icons-png.flaticon.com/512/7133/7133252.png' } // nodo home con thumbnail
+];
+const edges = [[1,2],[2,3],[3,5],[1,4],[4,5]];
+
+// ---- STATE ----
+let currentNode = 1;
+let homeNode = 5;
+let pulseValue = 0;
+let pulseDirection = 1;
+
+// leaderboard state
+let leaderboard = { gamesPlayed:0, nodesReached:0 };
+
+// ---- BFS PER PERCORSO ----
+function bfs(start,goal,edges){
+  const queue=[[start]]; const visited=new Set();
+  while(queue.length>0){
+    const path=queue.shift();
+    const node=path[path.length-1];
+    if(node===goal) return path;
+    if(!visited.has(node)){
+      visited.add(node);
+      const neighbors=edges.filter(e=> e[0]===node||e[1]===node)
+        .map(e=> e[0]===node?e[1]:e[0]);
+      neighbors.forEach(n=>queue.push([...path,n]));
+    }
+  }
+  return null;
+}
+const correctPath = bfs(currentNode,homeNode,edges);
+
+// ---- CREAZIONE GEOJSON ----
+function createGeoJSONNodes(){ return {
+  type:'FeatureCollection',
+  features:nodes.map(n=>({type:'Feature',geometry:{type:'Point',coordinates:n.coords},properties:{id:n.id,home:!!n.home,thumbnail:n.thumbnail||null}}))
+}};
+function createGeoJSONEdges(){ return {
+  type:'FeatureCollection',
+  features:edges.map(e=>({type:'Feature',geometry:{type:'LineString',coordinates:[nodes.find(n=>n.id===e[0]).coords,nodes.find(n=>n.id===e[1]).coords]}}))
+}}
+
+// aggiorna leaderboard
+function updateLeaderboard(){
+  document.getElementById('leaderboard-list').innerHTML = `
+    Partite giocate: ${leaderboard.gamesPlayed}<br>
+    Nodi raggiunti: ${leaderboard.nodesReached}
+  `;
+}
+
+// ---- MAP LAYER ----
+map.on('load',()=>{
+
+  // immagine nodo home
+  const homeNodeData = nodes.find(n=>n.home && n.thumbnail);
+  if(homeNodeData){
+    map.loadImage(homeNodeData.thumbnail, function(error, image){
+      if(error) return console.error(error);
+      map.addImage('home-thumb', image);
+    });
+  }
+
+  map.addSource('nodes',{type:'geojson',data:createGeoJSONNodes()});
+  map.addSource('edges',{type:'geojson',data:createGeoJSONEdges()});
+  map.addSource('highlight-edge',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+
+  // linee base
+  map.addLayer({id:'edges-layer',type:'line',source:'edges',paint:{'line-color':'#ff8800','line-width':2,'line-opacity':0.6}});
+  // linee evidenziate
+  map.addLayer({id:'highlight-edge-layer',type:'line',source:'highlight-edge',paint:{'line-color':'#66ff66','line-width':4,'line-opacity':0.9}});
+  // nodi base
+  map.addLayer({
+    id:'nodes-layer', type:'circle', source:'nodes',
+    paint:{
+      'circle-radius':window.innerWidth<400 ? 8 : 12, // dimensione adattiva
+      'circle-color':['case',['boolean',['get','home'],false],'#ffaa00','#4488ff'],
+      'circle-blur':0.6
+    }
+  });
+  // nodo home con icona
+  if(homeNodeData){
+    map.addLayer({
+      id:'nodes-icon-layer',
+      type:'symbol',
+      source:'nodes',
+      layout:{
+        'icon-image':'home-thumb',
+        'icon-size':window.innerWidth<400 ? 0.15 : 0.2,
+        'icon-allow-overlap':true
+      },
+      filter:['boolean',['get','home'],false]
+    });
+  }
+
+  // ---- CLICK NODI ----
+  map.on('click','nodes-layer',(e)=>{
+    const clickedId=e.features[0].properties.id;
+    const edge = edges.find(edge=> edge.includes(clickedId)&&edge.includes(currentNode));
+    if(!edge) return;
+
+    // evidenzia linea selezionata
+    const startNode = nodes.find(n=>n.id===edge[0]);
+    const endNode = nodes.find(n=>n.id===edge[1]);
+    map.getSource('highlight-edge').setData({
+      type:'FeatureCollection',
+      features:[{type:'Feature',geometry:{type:'LineString',coordinates:[startNode.coords,endNode.coords]}}]
+    });
+
+    currentNode = clickedId;
+    leaderboard.nodesReached += 1; // aggiorna leaderboard
+    updateGlow();
+    updateLeaderboard();
+
+    // popup con thumbnail se esiste
+    const clickedNode = nodes.find(n=>n.id===clickedId);
+    let html = `Nodo ${clickedId}`;
+    if(clickedNode.thumbnail) html += `<br><img src="${clickedNode.thumbnail}" style="width:80%;max-width:120px">`;
+
+    new mapboxgl.Popup({closeButton:true})
+      .setLngLat(clickedNode.coords)
+      .setHTML(html)
+      .addTo(map);
+
+    if(currentNode===homeNode){
+      alert("Hai trovato casa 🌙");
+      currentNode = 1;
+      leaderboard.gamesPlayed += 1; // aggiorna partite giocate
+      map.getSource('highlight-edge').setData({type:'FeatureCollection',features:[]});
+      updateGlow();
+      updateLeaderboard();
+    }
+  });
+
+  // ---- FUNZIONE AGGIORNAMENTO GLOW ----
+  function updateGlow(){
+    map.setPaintProperty('nodes-layer','circle-color',[
+      'case',
+      ['==',['get','id'],homeNode],'#ffaa00',
+      ['==',['get','id'],currentNode],'#66ff66',
+      '#4488ff'
+    ]);
+  }
+
+  // ---- ANIMAZIONE PULSANTE ----
+  function animate(){
+    pulseValue += pulseDirection*0.01;
+    if(pulseValue>=0.6 || pulseValue<=0.3) pulseDirection*=-1;
+    map.setPaintProperty('nodes-layer','circle-blur',[
+      'case',['==',['get','id'],homeNode],pulseValue,0.6
+    ]);
+    map.setPaintProperty('edges-layer','line-opacity',0.4+0.2*Math.sin(pulseValue*10));
+    requestAnimationFrame(animate);
+  }
+  animate();
+  updateGlow();
+  updateLeaderboard();
+});
+
+// ---- HANDLE RESIZE ----
+window.addEventListener('resize', ()=>{
+  map.resize();
+  // Aggiorna dimensione nodi e icone in base alla nuova larghezza
+  map.setPaintProperty('nodes-layer','circle-radius',window.innerWidth<400 ? 8 : 12);
+  map.setLayoutProperty('nodes-icon-layer','icon-size',window.innerWidth<400 ? 0.15 : 0.2);
+});
+</script>
+</body>
+</html>
