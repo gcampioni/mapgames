@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MetroPulse – Full Graph MVP</title>
+<script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet"/>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000;}
+#map{width:100%;height:100%;}
+.ui{
+  position:absolute;
+  top:10px;
+  left:10px;
+  background:rgba(0,0,0,0.7);
+  color:#fff;
+  padding:10px;
+  font-family:sans-serif;
+  border-radius:8px;
+}
+.leaderboard{
+  position:absolute;
+  top:10px;
+  right:10px;
+  background:rgba(0,0,0,0.7);
+  color:#fff;
+  padding:10px;
+  border-radius:8px;
+  font-family:sans-serif;
+}
+button{
+  margin-top:6px;
+}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="ui">
+  <div><b>MetroPulse</b></div>
+  <div id="status">Loading streets...</div>
+  <button onclick="toggleRespira()">Respira Mode</button>
+  <button onclick="resetGame()">New Game</button>
+</div>
+
+<div class="leaderboard">
+  Games: <span id="games">0</span><br>
+  Moves: <span id="moves">0</span>
+</div>
+
+<script>
+mapboxgl.accessToken = 'eyJ1IjoiZ2NhbXBpb25pIiwiYSI6ImNtbTFzd2djNjBjN2YycHBqb2F2b3JmcDUifQ';
+
+const map = new mapboxgl.Map({
+  container:'map',
+  style:'mapbox://styles/mapbox/dark-v11',
+  center:[12.4768,41.8895],
+  zoom:15
+});
+
+const bbox="(41.883,12.466,41.895,12.485)";
+
+let graph={};
+let intersectionsGeoJSON;
+let streetsGeoJSON;
+let currentNode=null;
+let homeNode=null;
+let games=0;
+let moves=0;
+let respira=false;
+let pulse=0;
+
+async function loadOSM(){
+  const query=`
+  [out:json];
+  (
+    way["highway"]
+    ["highway"!~"motorway|trunk|primary"]
+    ${bbox};
+  );
+  (._;>;);
+  out body;
+  `;
+  const res=await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:query});
+  const data=await res.json();
+  processOSM(data);
+}
+
+function processOSM(data){
+  const nodes={};
+  const ways=[];
+  data.elements.forEach(el=>{
+    if(el.type==="node") nodes[el.id]=el;
+    if(el.type==="way") ways.push(el);
+  });
+
+  const count={};
+  ways.forEach(w=>{
+    w.nodes.forEach(n=>{
+      count[n]=(count[n]||0)+1;
+    });
+  });
+
+  const intersections=Object.keys(count).filter(id=>count[id]>1);
+
+  graph={};
+  intersections.forEach(id=>graph[id]=[]);
+
+  ways.forEach(w=>{
+    for(let i=0;i<w.nodes.length-1;i++){
+      const a=w.nodes[i];
+      const b=w.nodes[i+1];
+      if(graph[a] && graph[b]){
+        graph[a].push(b);
+        graph[b].push(a);
+      }
+    }
+  });
+
+  streetsGeoJSON={
+    type:"FeatureCollection",
+    features:ways.map(w=>({
+      type:"Feature",
+      geometry:{
+        type:"LineString",
+        coordinates:w.nodes.map(id=>[nodes[id].lon,nodes[id].lat])
+      }
+    }))
+  };
+
+  intersectionsGeoJSON={
+    type:"FeatureCollection",
+    features:intersections.map(id=>({
+      type:"Feature",
+      geometry:{type:"Point",coordinates:[nodes[id].lon,nodes[id].lat]},
+      properties:{id:id}
+    }))
+  };
+
+  map.addSource("streets",{type:"geojson",data:streetsGeoJSON});
+  map.addLayer({
+    id:"streets-layer",
+    type:"line",
+    source:"streets",
+    paint:{"line-color":"#333","line-width":2}
+  });
+
+  map.addSource("nodes",{type:"geojson",data:intersectionsGeoJSON});
+  map.addLayer({
+    id:"nodes-layer",
+    type:"circle",
+    source:"nodes",
+    paint:{
+      "circle-radius":5,
+      "circle-color":"#00ccff"
+    }
+  });
+
+  map.addSource("highlight",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
+  map.addLayer({
+    id:"highlight-layer",
+    type:"line",
+    source:"highlight",
+    paint:{"line-color":"#00ff88","line-width":4}
+  });
+
+  map.on("click","nodes-layer",onNodeClick);
+
+  startGame(intersections);
+}
+
+function startGame(intersections){
+  currentNode=intersections[Math.floor(Math.random()*intersections.length)];
+  homeNode=intersections[Math.floor(Math.random()*intersections.length)];
+  moves=0;
+  updateUI();
+  document.getElementById("status").innerText="Find Home 🌙";
+}
+
+function onNodeClick(e){
+  if(respira) return;
+  const id=e.features[0].properties.id;
+  if(graph[currentNode].includes(id)){
+    drawConnection(currentNode,id);
+    currentNode=id;
+    moves++;
+    updateUI();
+    if(id===homeNode){
+      alert("You found home 🌙");
+      games++;
+      resetGame();
+    }
+  }
+}
+
+function drawConnection(a,b){
+  const coords=intersectionsGeoJSON.features
+    .filter(f=>f.properties.id===a || f.properties.id===b)
+    .map(f=>f.geometry.coordinates);
+
+  map.getSource("highlight").setData({
+    type:"FeatureCollection",
+    features:[{
+      type:"Feature",
+      geometry:{type:"LineString",coordinates:coords}
+    }]
+  });
+}
+
+function updateUI(){
+  document.getElementById("games").innerText=games;
+  document.getElementById("moves").innerText=moves;
+}
+
+function resetGame(){
+  map.getSource("highlight").setData({type:"FeatureCollection",features:[]});
+  startGame(Object.keys(graph));
+}
+
+function toggleRespira(){
+  respira=!respira;
+}
+
+function animate(){
+  pulse+=0.02;
+  if(respira){
+    const radius=5+Math.sin(pulse)*2;
+    map.setPaintProperty("nodes-layer","circle-radius",radius);
+    map.setPaintProperty("streets-layer","line-opacity",0.5+Math.sin(pulse)*0.2);
+  }
+  requestAnimationFrame(animate);
+}
+
+map.on("load",()=>{
+  loadOSM();
+  animate();
+});
+</script>
+</body>
+</html>
